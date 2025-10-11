@@ -11,18 +11,25 @@ const (
 
 // GameFetcher manages game name resolution with rate limiting
 type GameFetcher struct {
-	cache        sync.Map // map[int]string - depotID -> gameName
-	pending      sync.Map // map[int]bool - depotIDs currently being fetched
-	requestQueue chan int
+	cache        sync.Map // map[string]string - gameID -> gameName
+	pending      sync.Map // map[string]bool - gameIDs currently being fetched
+	requestQueue chan GameRequest
 	resultChan   chan GameResult
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
-	scraper      *SteamDBScraper
+	steamScraper *SteamDBScraper
+	sonyScraper  *SonyScraper
+}
+
+// GameRequest represents a game name lookup request
+type GameRequest struct {
+	GameID   string
+	Platform string
 }
 
 // GameResult represents a fetched game name
 type GameResult struct {
-	GameID   int
+	GameID   string
 	GameName string
 	Error    error
 }
@@ -30,10 +37,11 @@ type GameResult struct {
 // NewGameFetcher creates a new GameFetcher with worker pool
 func NewGameFetcher(resultChan chan GameResult) *GameFetcher {
 	gf := &GameFetcher{
-		requestQueue: make(chan int, 100),
+		requestQueue: make(chan GameRequest, 100),
 		resultChan:   resultChan,
 		stopChan:     make(chan struct{}),
-		scraper:      NewSteamDBScraper(),
+		steamScraper: NewSteamDBScraper(),
+		sonyScraper:  NewSonyScraper(),
 	}
 
 	// Start worker pool
@@ -51,26 +59,37 @@ func (gf *GameFetcher) worker() {
 
 	for {
 		select {
-		case gameID := <-gf.requestQueue:
-			gf.fetchGameName(gameID)
+		case req := <-gf.requestQueue:
+			gf.fetchGameName(req)
 		case <-gf.stopChan:
 			return
 		}
 	}
 }
 
-// fetchGameName fetches the game name by scraping SteamDB
-func (gf *GameFetcher) fetchGameName(depotID int) {
-	defer gf.pending.Delete(depotID)
+// fetchGameName fetches the game name by scraping the appropriate service
+func (gf *GameFetcher) fetchGameName(req GameRequest) {
+	defer gf.pending.Delete(req.GameID)
 
-	// Use the scraper to get the game name
-	gameName := gf.scraper.GetGameName(depotID)
+	var gameName string
+
+	switch req.Platform {
+	case "steam":
+		// Convert string depot ID to int for Steam scraper
+		depotIDInt := 0
+		fmt.Sscanf(req.GameID, "%d", &depotIDInt)
+		gameName = gf.steamScraper.GetGameName(depotIDInt)
+	case "sony":
+		gameName = gf.sonyScraper.GetGameName(req.GameID)
+	default:
+		gameName = fmt.Sprintf("%s %s", req.Platform, req.GameID)
+	}
 
 	// Cache the result
-	gf.cache.Store(depotID, gameName)
+	gf.cache.Store(req.GameID, gameName)
 
 	gf.sendResult(GameResult{
-		GameID:   depotID,
+		GameID:   req.GameID,
 		GameName: gameName,
 		Error:    nil,
 	})
@@ -90,7 +109,7 @@ func (gf *GameFetcher) sendResult(result GameResult) {
 }
 
 // GetGameName returns the game name if cached, otherwise queues a fetch
-func (gf *GameFetcher) GetGameName(gameID int) string {
+func (gf *GameFetcher) GetGameName(gameID string, platform string) string {
 	// Check cache first
 	if name, ok := gf.cache.Load(gameID); ok {
 		return name.(string)
@@ -103,12 +122,12 @@ func (gf *GameFetcher) GetGameName(gameID int) string {
 
 	// Queue for fetching
 	select {
-	case gf.requestQueue <- gameID:
+	case gf.requestQueue <- GameRequest{GameID: gameID, Platform: platform}:
 		return "Resolving..."
 	default:
 		// Queue full, return placeholder
 		gf.pending.Delete(gameID)
-		return fmt.Sprintf("Game %d", gameID)
+		return fmt.Sprintf("Game %s", gameID)
 	}
 }
 

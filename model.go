@@ -11,8 +11,9 @@ import (
 
 // GameStats tracks statistics for a single game
 type GameStats struct {
-	GameID   int
+	GameID   string
 	GameName string
+	Platform string
 	Total    int
 	Hits     int
 	Misses   int
@@ -29,14 +30,14 @@ func (gs *GameStats) HitRate() float64 {
 // ActivityEntry represents a recent log event
 type ActivityEntry struct {
 	Timestamp time.Time
-	GameID    int
+	GameID   string
 	GameName  string
 	Status    string // "HIT" or "MISS"
 }
 
 // SharedState contains mutable state updated by background goroutines
 type SharedState struct {
-	games      map[int]*GameStats
+	games      map[string]*GameStats
 	gamesMutex sync.RWMutex
 	activities []ActivityEntry
 	totalLines int
@@ -49,6 +50,7 @@ type Model struct {
 	tailer       *tail.Tail
 	logFilePath  string
 	noResolve    bool
+	depotDB      *DepotDatabase
 	ready        bool
 	quitting     bool
 	width        int
@@ -72,7 +74,7 @@ type TailerReadyMsg struct {
 type TickMsg time.Time
 
 // NewModel creates a new Model
-func NewModel(logFilePath string, noResolve bool) Model {
+func NewModel(logFilePath string, noResolve bool, depotDB *DepotDatabase) Model {
 	var fetcher *GameFetcher
 	var gameResultCh chan GameResult
 
@@ -83,7 +85,7 @@ func NewModel(logFilePath string, noResolve bool) Model {
 
 	// Create shared state that will be accessed by background goroutines
 	sharedState := &SharedState{
-		games:      make(map[int]*GameStats),
+		games:      make(map[string]*GameStats),
 		activities: make([]ActivityEntry, 0),
 		totalLines: 0,
 	}
@@ -94,6 +96,7 @@ func NewModel(logFilePath string, noResolve bool) Model {
 		noResolve:    noResolve,
 		gameResultCh: gameResultCh,
 		fetcher:      fetcher,
+		depotDB:      depotDB,
 		lineCh:       make(chan string, 50000),
 	}
 }
@@ -159,7 +162,7 @@ func (m Model) startTailing() tea.Cmd {
 			debugf("processor goroutine: started")
 			processedCount := 0
 			steamLineCount := 0
-			gameIDsSeen := make(map[int]int) // Track how many lines per game ID
+			gameIDsSeen := make(map[string]int) // Track how many lines per game ID
 
 			for line := range m.lineCh {
 				processedCount++
@@ -197,13 +200,28 @@ func (m *Model) processLogEntry(entry *LogEntry) {
 	// Update or create game stats
 	stats, exists := m.state.games[entry.GameID]
 	if !exists {
-		gameName := fmt.Sprintf("Game %d", entry.GameID)
-		if !m.noResolve && m.fetcher != nil {
-			gameName = m.fetcher.GetGameName(entry.GameID)
+		gameName := fmt.Sprintf("%s %s", entry.Platform, entry.GameID)
+
+		// For Steam, look up game name in depot database or fetcher
+		if entry.Platform == "steam" {
+			if m.depotDB != nil {
+				if name, ok := m.depotDB.GetGameName(entry.GameID); ok {
+					gameName = name
+				} else if !m.noResolve && m.fetcher != nil {
+					// Depot DB didn't have it, try the fetcher
+					gameName = m.fetcher.GetGameName(entry.GameID, entry.Platform)
+				}
+			} else if !m.noResolve && m.fetcher != nil {
+				gameName = m.fetcher.GetGameName(entry.GameID, entry.Platform)
+			}
+		} else if !m.noResolve && m.fetcher != nil {
+			// For non-Steam platforms, try the fetcher
+			gameName = m.fetcher.GetGameName(entry.GameID, entry.Platform)
 		}
 		stats = &GameStats{
 			GameID:   entry.GameID,
 			GameName: gameName,
+			Platform: entry.Platform,
 			Total:    0,
 			Hits:     0,
 			Misses:   0,
@@ -212,7 +230,7 @@ func (m *Model) processLogEntry(entry *LogEntry) {
 	} else {
 		// Refresh game name from cache if it's still "Resolving..."
 		if !m.noResolve && m.fetcher != nil && stats.GameName == "Resolving..." {
-			stats.GameName = m.fetcher.GetGameName(entry.GameID)
+			stats.GameName = m.fetcher.GetGameName(entry.GameID, stats.Platform)
 		}
 	}
 
@@ -288,6 +306,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tailer.Stop()
 			}
 			return m, tea.Quit
+		case "r":
+			m.resetStats()
 		}
 		return m, nil
 
@@ -397,6 +417,16 @@ func (m *Model) GetActivities() []ActivityEntry {
 	activities := make([]ActivityEntry, len(m.state.activities))
 	copy(activities, m.state.activities)
 	return activities
+}
+
+// resetStats clears all statistics
+func (m *Model) resetStats() {
+	m.state.gamesMutex.Lock()
+	defer m.state.gamesMutex.Unlock()
+
+	m.state.games = make(map[string]*GameStats)
+	m.state.activities = make([]ActivityEntry, 0)
+	m.state.totalLines = 0
 }
 
 // FormatTimestamp formats a timestamp for display

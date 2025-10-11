@@ -77,8 +77,8 @@ func (m *Model) renderGameTable() string {
 	b.WriteString("\n")
 
 	// Table header
-	header := fmt.Sprintf("%-10s | %-50s | %-8s | %-8s | %-8s | %-8s",
-		"Game ID", "Game Name", "Total", "HITs", "MISSes", "Hit Rate")
+	header := fmt.Sprintf("%-10s | %-10s | %-45s | %-8s | %-8s | %-8s | %-8s",
+		"Platform", "Game ID", "Game Name", "Total", "HITs", "MISSes", "Hit Rate")
 	b.WriteString(tableRowStyle.Render(header))
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", len(header)))
@@ -87,7 +87,7 @@ func (m *Model) renderGameTable() string {
 	// Game rows
 	games := m.GetGameList()
 	if len(games) == 0 {
-		b.WriteString(tableRowStyle.Render("No Steam downloads detected yet..."))
+		b.WriteString(tableRowStyle.Render("No downloads detected yet..."))
 		return b.String()
 	}
 
@@ -99,13 +99,14 @@ func (m *Model) renderGameTable() string {
 
 	for _, stats := range games {
 		gameName := stats.GameName
-		if len(gameName) > 50 {
-			gameName = gameName[:47] + "..."
+		if len(gameName) > 45 {
+			gameName = gameName[:42] + "..."
 		}
 
 		hitRate := fmt.Sprintf("%.1f%%", stats.HitRate())
 
-		row := fmt.Sprintf("%-10d | %-50s | %-8d | %-8d | %-8d | %-8s",
+		row := fmt.Sprintf("%-10s | %-10s | %-45s | %-8d | %-8d | %-8d | %-8s",
+			stats.Platform,
 			stats.GameID,
 			gameName,
 			stats.Total,
@@ -155,7 +156,7 @@ func (m *Model) renderActivityLog() string {
 			style = activityMissStyle
 		}
 
-		line := fmt.Sprintf("%s %s [%d] %s: %s",
+		line := fmt.Sprintf("%s %s [%s] %s: %s",
 			timestamp,
 			statusIcon,
 			activity.GameID,
@@ -174,7 +175,7 @@ func (m *Model) renderStatusBar() string {
 	totalGames, pendingLookups := m.GetStats()
 
 	status := fmt.Sprintf(
-		"Total Lines: %d | Active Games: %d | Pending Lookups: %d | Press 'q' to quit",
+		"Total Lines: %d | Active Games: %d | Pending Lookups: %d | Press 'r' to reset | 'q' to quit",
 		m.state.totalLines,
 		totalGames,
 		pendingLookups,
