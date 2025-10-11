@@ -44,6 +44,9 @@ var (
 
 	activityTimeStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888888"))
+
+	graphBarStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#9D7CD8")) // Purple
 )
 
 // renderUI renders the complete UI
@@ -56,6 +59,10 @@ func (m *Model) renderUI() string {
 
 	// Game statistics table
 	b.WriteString(m.renderGameTable())
+	b.WriteString("\n\n")
+
+	// Log rate graph
+	b.WriteString(m.renderLogRateGraph())
 	b.WriteString("\n\n")
 
 	// Activity log
@@ -182,4 +189,72 @@ func (m *Model) renderStatusBar() string {
 	)
 
 	return statusBarStyle.Render(status)
+}
+
+// renderLogRateGraph renders a terminal graph of log rate over time
+func (m *Model) renderLogRateGraph() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("Log Rate (logs/sec)"))
+	b.WriteString("\n")
+
+	rates := m.GetLogRates()
+	if len(rates) == 0 {
+		b.WriteString(tableRowStyle.Render("No data yet..."))
+		return b.String()
+	}
+
+	// Find max rate for scaling
+	maxRate := 1
+	for _, r := range rates {
+		if r.Rate > maxRate {
+			maxRate = r.Rate
+		}
+	}
+
+	// Graph dimensions
+	graphWidth := 60
+	graphHeight := 10
+
+	// Create graph
+	for row := graphHeight; row >= 0; row-- {
+		// Y-axis label
+		value := (maxRate * row) / graphHeight
+		b.WriteString(fmt.Sprintf("%5d │ ", value))
+
+		// Plot line
+		for i := 0; i < graphWidth; i++ {
+			// Map column to data point
+			var rate int
+			if len(rates) < graphWidth {
+				// Not enough data to fill graph, show from beginning
+				if i < len(rates) {
+					rate = rates[i].Rate
+				} else {
+					rate = 0
+				}
+			} else {
+				// Enough data, show last graphWidth points
+				dataIdx := len(rates) - graphWidth + i
+				rate = rates[dataIdx].Rate
+			}
+
+			scaledRate := (rate * graphHeight) / maxRate
+
+			if scaledRate >= row {
+				b.WriteString(graphBarStyle.Render("█"))
+			} else if scaledRate == row-1 && rate > 0 {
+				b.WriteString(graphBarStyle.Render("▄"))
+			} else {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// X-axis
+	b.WriteString("      └" + strings.Repeat("─", graphWidth) + "\n")
+	b.WriteString(fmt.Sprintf("       %ds ago%s now", len(rates), strings.Repeat(" ", graphWidth-15)))
+
+	return b.String()
 }

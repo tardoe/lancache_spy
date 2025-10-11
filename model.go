@@ -35,12 +35,20 @@ type ActivityEntry struct {
 	Status    string // "HIT" or "MISS"
 }
 
+// LogRatePoint represents log rate at a point in time
+type LogRatePoint struct {
+	Timestamp time.Time
+	Rate      int // logs per second
+}
+
 // SharedState contains mutable state updated by background goroutines
 type SharedState struct {
 	games      map[string]*GameStats
 	gamesMutex sync.RWMutex
 	activities []ActivityEntry
 	totalLines int
+	logRates   []LogRatePoint // Time series of log rates
+	lastRate   int            // Last calculated rate
 }
 
 // Model is the bubbletea model for the application
@@ -73,6 +81,9 @@ type TailerReadyMsg struct {
 // TickMsg is sent periodically to trigger UI refresh
 type TickMsg time.Time
 
+// LogRateMsg is sent periodically to update log rate
+type LogRateMsg time.Time
+
 // NewModel creates a new Model
 func NewModel(logFilePath string, noResolve bool, depotDB *DepotDatabase) Model {
 	var fetcher *GameFetcher
@@ -88,6 +99,8 @@ func NewModel(logFilePath string, noResolve bool, depotDB *DepotDatabase) Model 
 		games:      make(map[string]*GameStats),
 		activities: make([]ActivityEntry, 0),
 		totalLines: 0,
+		logRates:   make([]LogRatePoint, 0),
+		lastRate:   0,
 	}
 
 	return Model{
@@ -104,7 +117,8 @@ func NewModel(logFilePath string, noResolve bool, depotDB *DepotDatabase) Model 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.startTailing(),
-		m.tick(), // Start UI refresh timer
+		m.tick(),          // Start UI refresh timer
+		m.updateLogRate(), // Start log rate tracking
 	}
 
 	if !m.noResolve {
@@ -118,6 +132,13 @@ func (m Model) Init() tea.Cmd {
 func (m Model) tick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return TickMsg(t)
+	})
+}
+
+// updateLogRate returns a command that calculates log rate every second
+func (m Model) updateLogRate() tea.Cmd {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+		return LogRateMsg(t)
 	})
 }
 
@@ -320,6 +341,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		debugf("Update: TickMsg - totalLines=%d, games=%d", m.state.totalLines, len(m.state.games))
 		return m, m.tick()
 
+	case LogRateMsg:
+		m.calculateLogRate(time.Time(msg))
+		return m, m.updateLogRate()
+
 	case GameNameMsg:
 		m.updateGameName(GameResult(msg))
 		return m, m.waitForGameNames()
@@ -427,6 +452,42 @@ func (m *Model) resetStats() {
 	m.state.games = make(map[string]*GameStats)
 	m.state.activities = make([]ActivityEntry, 0)
 	m.state.totalLines = 0
+	m.state.logRates = make([]LogRatePoint, 0)
+	m.state.lastRate = 0
+}
+
+// calculateLogRate calculates the current log rate and adds it to history
+func (m *Model) calculateLogRate(t time.Time) {
+	m.state.gamesMutex.Lock()
+	defer m.state.gamesMutex.Unlock()
+
+	// Calculate rate based on totalLines change
+	currentTotal := m.state.totalLines
+
+	// Calculate rate (lines per second since last check - we check every second)
+	rate := currentTotal - m.state.lastRate
+	m.state.lastRate = currentTotal
+
+	// Add to history
+	m.state.logRates = append(m.state.logRates, LogRatePoint{
+		Timestamp: t,
+		Rate:      rate,
+	})
+
+	// Keep only last 60 seconds of data
+	if len(m.state.logRates) > 60 {
+		m.state.logRates = m.state.logRates[len(m.state.logRates)-60:]
+	}
+}
+
+// GetLogRates returns the log rate history
+func (m *Model) GetLogRates() []LogRatePoint {
+	m.state.gamesMutex.RLock()
+	defer m.state.gamesMutex.RUnlock()
+
+	rates := make([]LogRatePoint, len(m.state.logRates))
+	copy(rates, m.state.logRates)
+	return rates
 }
 
 // FormatTimestamp formats a timestamp for display
