@@ -1,0 +1,12 @@
+# Build output
+/lancache_spy
+/lancache_spy_*
+/test_no_ui
+/dist/
+
+# Runtime
+lancache_spy_debug.log
+
+# Local tooling
+.claude/settings.local.json
+.DS_Store
