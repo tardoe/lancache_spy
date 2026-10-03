@@ -2,7 +2,7 @@ package main
 
 import (
 	"regexp"
-	
+	"strings"
 )
 
 var (
@@ -10,19 +10,23 @@ var (
 	steamDepotRegex = regexp.MustCompile(`\[steam\].*?/depot/(\d+)/chunk/`)
 	// Regex to match [sony] log lines and extract game ID (PPSA##### format)
 	sonyGameRegex = regexp.MustCompile(`\[sony\].*?/gst/prod/\d+/(PPSA\d+)_`)
+	// Regex to match [epicgames] log lines and extract game name from path
+	epicGamesRegex = regexp.MustCompile(`\[epicgames\].*?"GET /([^/]+)/([^/]+)/`)
+	// Regex to match [blizzard] log lines and extract game name from path
+	blizzardRegex = regexp.MustCompile(`\[blizzard\].*?"GET /([^/]+)/([^/]+)/`)
 	// Regex to extract HIT or MISS status
 	statusRegex = regexp.MustCompile(`"(HIT|MISS)"`)
 )
 
 // LogEntry represents a parsed log line
 type LogEntry struct {
-	Platform string // "steam", "sony", "xboxlive", "epicgames"
-	GameID   string // For steam: depot ID, for sony: PPSA ID, for others: platform name
+	Platform string // "steam", "sony", "xboxlive", "epicgames", "blizzard"
+	GameID   string // For steam: depot ID, for sony: PPSA ID, for others: game name from path
 	Status   string // "HIT" or "MISS"
 }
 
 // ParseLogLine parses any supported platform log line
-// Supports: steam, sony, xboxlive, epicgames
+// Supports: steam, sony, xboxlive, epicgames, blizzard
 // Returns nil if the line is not a valid log line
 func ParseLogLine(line string) *LogEntry {
 	if len(line) == 0 || line[0] != '[' {
@@ -63,11 +67,24 @@ func ParseLogLine(line string) *LogEntry {
 		}
 	}
 
-	// Check for Epic Games
-	if len(line) > 11 && line[1:10] == "epicgames" {
+	// Check for Epic Games - extract game name from path
+	if epicMatches := epicGamesRegex.FindStringSubmatch(line); len(epicMatches) >= 3 {
+		// Get the second path component and normalize to lowercase
+		gameName := strings.ToLower(epicMatches[2])
 		return &LogEntry{
 			Platform: "epicgames",
-			GameID:   "epicgames",
+			GameID:   gameName,
+			Status:   status,
+		}
+	}
+
+	// Check for Blizzard - extract game name from path
+	if blizzardMatches := blizzardRegex.FindStringSubmatch(line); len(blizzardMatches) >= 3 {
+		// Get the second path component and normalize to lowercase
+		gameName := strings.ToLower(blizzardMatches[2])
+		return &LogEntry{
+			Platform: "blizzard",
+			GameID:   gameName,
 			Status:   status,
 		}
 	}

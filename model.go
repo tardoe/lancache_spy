@@ -235,8 +235,11 @@ func (m *Model) processLogEntry(entry *LogEntry) {
 			} else if !m.noResolve && m.fetcher != nil {
 				gameName = m.fetcher.GetGameName(entry.GameID, entry.Platform)
 			}
+		} else if entry.Platform == "epicgames" || entry.Platform == "blizzard" {
+			// For Epic Games and Blizzard, just use the game ID (already normalized)
+			gameName = entry.GameID
 		} else if !m.noResolve && m.fetcher != nil {
-			// For non-Steam platforms, try the fetcher
+			// For other non-Steam platforms, try the fetcher
 			gameName = m.fetcher.GetGameName(entry.GameID, entry.Platform)
 		}
 		stats = &GameStats{
