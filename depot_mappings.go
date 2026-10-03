@@ -9,15 +9,15 @@ var commonDepotMappings = map[int]string{
 	252953: "Rocket League",
 
 	// Counter-Strike 2 (730)
-	731: "Counter-Strike 2",
-	732: "Counter-Strike 2",
-	733: "Counter-Strike 2",
+	731:     "Counter-Strike 2",
+	732:     "Counter-Strike 2",
+	733:     "Counter-Strike 2",
 	2347770: "Counter-Strike 2",
 	2347771: "Counter-Strike 2",
 
 	// Dota 2 (570)
-	571: "Dota 2",
-	572: "Dota 2",
+	571:    "Dota 2",
+	572:    "Dota 2",
 	373301: "Dota 2",
 	381451: "Dota 2",
 

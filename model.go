@@ -30,7 +30,7 @@ func (gs *GameStats) HitRate() float64 {
 // ActivityEntry represents a recent log event
 type ActivityEntry struct {
 	Timestamp time.Time
-	GameID   string
+	GameID    string
 	GameName  string
 	Status    string // "HIT" or "MISS"
 }
@@ -146,9 +146,9 @@ func (m Model) updateLogRate() tea.Cmd {
 func (m Model) startTailing() tea.Cmd {
 	return func() tea.Msg {
 		t, err := tail.TailFile(m.logFilePath, tail.Config{
-			Follow:    true,  // Keep following the file as it grows
-			ReOpen:    true,  // Reopen if rotated
-			Poll:      true,  // Use polling for compatibility
+			Follow:    true, // Keep following the file as it grows
+			ReOpen:    true, // Reopen if rotated
+			Poll:      true, // Use polling for compatibility
 			MustExist: true,
 			Location:  &tail.SeekInfo{Offset: 0, Whence: 2}, // Start from END of file (tail -f behavior)
 		})
@@ -292,7 +292,7 @@ func (m Model) waitForGameNames() tea.Cmd {
 
 		select {
 		case result := <-m.gameResultCh:
-			debugf("waitForGameNames: received result for game %d", result.GameID)
+			debugf("waitForGameNames: received result for game %s", result.GameID)
 			return GameNameMsg(result)
 		case <-time.After(100 * time.Millisecond):
 			// Timeout to prevent blocking forever

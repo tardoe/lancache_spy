@@ -18,8 +18,8 @@ const (
 
 // SteamDBScraper scrapes SteamDB to resolve depot IDs to app IDs and game names
 type SteamDBScraper struct {
-	cache      sync.Map // map[int]string - depotID -> gameName
-	httpClient *http.Client
+	cache       sync.Map // map[int]string - depotID -> gameName
+	httpClient  *http.Client
 	rateLimiter chan struct{} // Rate limit scraping
 }
 

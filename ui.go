@@ -46,7 +46,7 @@ var (
 				Foreground(lipgloss.Color("#888888"))
 
 	graphBarStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#9D7CD8")) // Purple
+			Foreground(lipgloss.Color("#9D7CD8")) // Purple
 )
 
 // renderUI renders the complete UI
