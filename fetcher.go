@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
 
 const (
 	maxWorkers = 5
+
+	// resolvingName is shown while a game name lookup is queued or in flight
+	resolvingName = "Resolving..."
 )
 
 // GameFetcher manages game name resolution with rate limiting
@@ -15,7 +19,8 @@ type GameFetcher struct {
 	pending      sync.Map // map[string]bool - gameIDs currently being fetched
 	requestQueue chan GameRequest
 	resultChan   chan GameResult
-	stopChan     chan struct{}
+	ctx          context.Context // cancelled by Stop to abort in-flight lookups
+	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	steamScraper *SteamDBScraper
 	sonyScraper  *SonyScraper
@@ -36,12 +41,14 @@ type GameResult struct {
 
 // NewGameFetcher creates a new GameFetcher with worker pool
 func NewGameFetcher(resultChan chan GameResult) *GameFetcher {
+	ctx, cancel := context.WithCancel(context.Background())
 	gf := &GameFetcher{
 		requestQueue: make(chan GameRequest, 100),
 		resultChan:   resultChan,
-		stopChan:     make(chan struct{}),
-		steamScraper: NewSteamDBScraper(),
-		sonyScraper:  NewSonyScraper(),
+		ctx:          ctx,
+		cancel:       cancel,
+		steamScraper: NewSteamDBScraper(ctx),
+		sonyScraper:  NewSonyScraper(ctx),
 	}
 
 	// Start worker pool
@@ -61,7 +68,7 @@ func (gf *GameFetcher) worker() {
 		select {
 		case req := <-gf.requestQueue:
 			gf.fetchGameName(req)
-		case <-gf.stopChan:
+		case <-gf.ctx.Done():
 			return
 		}
 	}
@@ -100,7 +107,7 @@ func (gf *GameFetcher) sendResult(result GameResult) {
 	select {
 	case gf.resultChan <- result:
 		// Sent successfully
-	case <-gf.stopChan:
+	case <-gf.ctx.Done():
 		// Shutting down, don't block
 	default:
 		// Channel full, drop the message to prevent deadlock
@@ -117,24 +124,24 @@ func (gf *GameFetcher) GetGameName(gameID string, platform string) string {
 
 	// Check if already pending
 	if _, pending := gf.pending.LoadOrStore(gameID, true); pending {
-		return "Resolving..."
+		return resolvingName
 	}
 
 	// Queue for fetching
 	select {
 	case gf.requestQueue <- GameRequest{GameID: gameID, Platform: platform}:
-		return "Resolving..."
 	default:
-		// Queue full, return placeholder
+		// Queue full: report as still resolving so the next log line
+		// for this game retries the lookup
 		gf.pending.Delete(gameID)
-		return fmt.Sprintf("Game %s", gameID)
 	}
+	return resolvingName
 }
 
-// Stop gracefully shuts down the worker pool
+// Stop shuts down the worker pool, aborting any in-flight lookups.
+// The request queue is left open so late GetGameName calls can't panic.
 func (gf *GameFetcher) Stop() {
-	close(gf.stopChan)
+	gf.cancel()
 	gf.wg.Wait()
-	close(gf.requestQueue)
 	// Don't close resultChan - it's owned by the caller
 }

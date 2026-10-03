@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,17 +18,23 @@ const (
 type SonyScraper struct {
 	cache       sync.Map // map[string]string - titleID -> gameName
 	httpClient  *http.Client
-	rateLimiter chan struct{} // Rate limit scraping
+	rateLimiter chan struct{}   // Rate limit scraping
+	ctx         context.Context // aborts rate-limit waits and requests on shutdown
 }
 
 // NewSonyScraper creates a new Sony scraper
-func NewSonyScraper() *SonyScraper {
+func NewSonyScraper(ctx context.Context) *SonyScraper {
 	// Rate limiter - max 1 request per second to be respectful
 	rateLimiter := make(chan struct{}, 1)
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
 			select {
 			case rateLimiter <- struct{}{}:
 			default:
@@ -40,6 +47,7 @@ func NewSonyScraper() *SonyScraper {
 			Timeout: 10 * time.Second,
 		},
 		rateLimiter: rateLimiter,
+		ctx:         ctx,
 	}
 }
 
@@ -51,10 +59,14 @@ func (s *SonyScraper) GetGameName(titleID string) string {
 	}
 
 	// Rate limit
-	<-s.rateLimiter
+	select {
+	case <-s.rateLimiter:
+	case <-s.ctx.Done():
+		return fmt.Sprintf("Sony %s", titleID)
+	}
 
 	url := fmt.Sprintf(prosperoPatchesURL, titleID)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(s.ctx, "GET", url, nil)
 	if err != nil {
 		fallback := fmt.Sprintf("Sony %s", titleID)
 		s.cache.Store(titleID, fallback)
@@ -66,6 +78,9 @@ func (s *SonyScraper) GetGameName(titleID string) string {
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		fallback := fmt.Sprintf("Sony %s", titleID)
+		if s.ctx.Err() != nil {
+			return fallback // shutting down; don't cache
+		}
 		s.cache.Store(titleID, fallback)
 		return fallback
 	}

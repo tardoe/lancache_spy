@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,17 +21,23 @@ const (
 type SteamDBScraper struct {
 	cache       sync.Map // map[int]string - depotID -> gameName
 	httpClient  *http.Client
-	rateLimiter chan struct{} // Rate limit scraping
+	rateLimiter chan struct{}   // Rate limit scraping
+	ctx         context.Context // aborts rate-limit waits and requests on shutdown
 }
 
 // NewSteamDBScraper creates a new scraper
-func NewSteamDBScraper() *SteamDBScraper {
+func NewSteamDBScraper(ctx context.Context) *SteamDBScraper {
 	// Rate limiter - max 1 request per second to be respectful
 	rateLimiter := make(chan struct{}, 1)
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
 			select {
 			case rateLimiter <- struct{}{}:
 			default:
@@ -43,6 +50,7 @@ func NewSteamDBScraper() *SteamDBScraper {
 			Timeout: 10 * time.Second,
 		},
 		rateLimiter: rateLimiter,
+		ctx:         ctx,
 	}
 }
 
@@ -60,11 +68,15 @@ func (s *SteamDBScraper) GetGameName(depotID int) string {
 	}
 
 	// Rate limit
-	<-s.rateLimiter
+	select {
+	case <-s.rateLimiter:
+	case <-s.ctx.Done():
+		return fmt.Sprintf("Depot %d", depotID)
+	}
 
 	// Scrape SteamDB
 	url := fmt.Sprintf(steamDBDepotURL, depotID)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(s.ctx, "GET", url, nil)
 	if err != nil {
 		fallback := fmt.Sprintf("Depot %d", depotID)
 		s.cache.Store(depotID, fallback)
@@ -76,6 +88,9 @@ func (s *SteamDBScraper) GetGameName(depotID int) string {
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		fallback := fmt.Sprintf("Depot %d", depotID)
+		if s.ctx.Err() != nil {
+			return fallback // shutting down; don't cache
+		}
 		s.cache.Store(depotID, fallback)
 		return fallback
 	}
@@ -134,10 +149,14 @@ func (s *SteamDBScraper) parseGameName(html string, depotID int) string {
 // GetAppID extracts the app ID from the depot page
 func (s *SteamDBScraper) GetAppID(depotID int) (int, error) {
 	// Rate limit
-	<-s.rateLimiter
+	select {
+	case <-s.rateLimiter:
+	case <-s.ctx.Done():
+		return 0, s.ctx.Err()
+	}
 
 	url := fmt.Sprintf(steamDBDepotURL, depotID)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(s.ctx, "GET", url, nil)
 	if err != nil {
 		return 0, err
 	}

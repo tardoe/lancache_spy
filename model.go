@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -145,12 +146,19 @@ func (m Model) updateLogRate() tea.Cmd {
 // startTailing begins tailing the log file and starts a background goroutine
 func (m Model) startTailing() tea.Cmd {
 	return func() tea.Msg {
+		// tail logs to stderr by default, which would draw over the TUI
+		logger := tail.DiscardingLogger
+		if debugLog != nil {
+			logger = debugLog
+		}
+
 		t, err := tail.TailFile(m.logFilePath, tail.Config{
 			Follow:    true, // Keep following the file as it grows
 			ReOpen:    true, // Reopen if rotated
 			Poll:      true, // Use polling for compatibility
 			MustExist: true,
 			Location:  &tail.SeekInfo{Offset: 0, Whence: 2}, // Start from END of file (tail -f behavior)
+			Logger:    logger,
 		})
 		if err != nil {
 			return tea.Quit()
@@ -203,8 +211,9 @@ func (m Model) startTailing() tea.Cmd {
 			}
 			debugf("processor goroutine: FINAL - processed %d lines, %d steam lines, %d unique games",
 				processedCount, steamLineCount, len(gameIDsSeen))
+			snap := m.Snapshot()
 			debugf("processor goroutine: totalLines in state=%d, games in state=%d",
-				m.state.totalLines, len(m.state.games))
+				snap.TotalLines, len(snap.Games))
 		}()
 
 		return TailerReadyMsg{tailer: t}
@@ -252,8 +261,8 @@ func (m *Model) processLogEntry(entry *LogEntry) {
 		}
 		m.state.games[entry.GameID] = stats
 	} else {
-		// Refresh game name from cache if it's still "Resolving..."
-		if !m.noResolve && m.fetcher != nil && stats.GameName == "Resolving..." {
+		// Refresh game name from cache if it's still resolving
+		if !m.noResolve && m.fetcher != nil && stats.GameName == resolvingName {
 			stats.GameName = m.fetcher.GetGameName(entry.GameID, stats.Platform)
 		}
 	}
@@ -285,20 +294,14 @@ func (m Model) waitForGameNames() tea.Cmd {
 		return nil
 	}
 
+	// Block until a result arrives. Commands run in their own goroutine, so
+	// this doesn't stall the UI, and Update re-arms it after each
+	// GameNameMsg. A timeout here would return nil, which bubbletea drops,
+	// ending the chain.
 	return func() tea.Msg {
-		gameResultChanLen := len(m.gameResultCh)
-		gameResultChanCap := cap(m.gameResultCh)
-		debugf("waitForGameNames: gameResultCh status: %d/%d", gameResultChanLen, gameResultChanCap)
-
-		select {
-		case result := <-m.gameResultCh:
-			debugf("waitForGameNames: received result for game %s", result.GameID)
-			return GameNameMsg(result)
-		case <-time.After(100 * time.Millisecond):
-			// Timeout to prevent blocking forever
-			debugf("waitForGameNames: timeout")
-			return nil
-		}
+		result := <-m.gameResultCh
+		debugf("waitForGameNames: received result for game %s", result.GameID)
+		return GameNameMsg(result)
 	}
 }
 
@@ -341,7 +344,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TickMsg:
 		// UI refresh tick - just trigger re-render and queue next tick
-		debugf("Update: TickMsg - totalLines=%d, games=%d", m.state.totalLines, len(m.state.games))
 		return m, m.tick()
 
 	case LogRateMsg:
@@ -350,11 +352,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case GameNameMsg:
 		m.updateGameName(GameResult(msg))
-		return m, m.waitForGameNames()
-	}
-
-	// Keep game name resolution running if enabled
-	if m.ready && !m.quitting && !m.noResolve {
 		return m, m.waitForGameNames()
 	}
 
@@ -397,54 +394,43 @@ func (m Model) View() string {
 	return m.renderUI()
 }
 
-// GetGameList returns a sorted list of games for rendering
-func (m *Model) GetGameList() []*GameStats {
+// Snapshot is a consistent copy of the shared state for rendering
+type Snapshot struct {
+	Games          []GameStats // sorted by total activity, descending
+	Activities     []ActivityEntry
+	LogRates       []LogRatePoint
+	TotalLines     int
+	PendingLookups int
+}
+
+// Snapshot copies the shared state under a single read lock, so rendering
+// never touches structs the processor goroutine is mutating
+func (m *Model) Snapshot() Snapshot {
 	m.state.gamesMutex.RLock()
 	defer m.state.gamesMutex.RUnlock()
 
-	games := make([]*GameStats, 0, len(m.state.games))
-	for _, stats := range m.state.games {
-		games = append(games, stats)
+	snap := Snapshot{
+		Games:      make([]GameStats, 0, len(m.state.games)),
+		Activities: append([]ActivityEntry(nil), m.state.activities...),
+		LogRates:   append([]LogRatePoint(nil), m.state.logRates...),
+		TotalLines: m.state.totalLines,
 	}
-
-	// Sort by total activity (descending)
-	for i := 0; i < len(games)-1; i++ {
-		for j := i + 1; j < len(games); j++ {
-			if games[i].Total < games[j].Total {
-				games[i], games[j] = games[j], games[i]
-			}
+	for _, stats := range m.state.games {
+		snap.Games = append(snap.Games, *stats)
+		if stats.GameName == resolvingName {
+			snap.PendingLookups++
 		}
 	}
 
-	return games
-}
-
-// GetStats returns overall statistics
-func (m *Model) GetStats() (totalGames, pendingLookups int) {
-	m.state.gamesMutex.RLock()
-	defer m.state.gamesMutex.RUnlock()
-
-	totalGames = len(m.state.games)
-
-	// Count pending lookups
-	for _, stats := range m.state.games {
-		if stats.GameName == "Resolving..." {
-			pendingLookups++
+	// Sort by total activity, breaking ties by ID so rows don't jump around
+	sort.Slice(snap.Games, func(i, j int) bool {
+		if snap.Games[i].Total != snap.Games[j].Total {
+			return snap.Games[i].Total > snap.Games[j].Total
 		}
-	}
+		return snap.Games[i].GameID < snap.Games[j].GameID
+	})
 
-	return
-}
-
-// GetActivities returns recent activities
-func (m *Model) GetActivities() []ActivityEntry {
-	m.state.gamesMutex.RLock()
-	defer m.state.gamesMutex.RUnlock()
-
-	// Return a copy to avoid race conditions
-	activities := make([]ActivityEntry, len(m.state.activities))
-	copy(activities, m.state.activities)
-	return activities
+	return snap
 }
 
 // resetStats clears all statistics
@@ -481,16 +467,6 @@ func (m *Model) calculateLogRate(t time.Time) {
 	if len(m.state.logRates) > 60 {
 		m.state.logRates = m.state.logRates[len(m.state.logRates)-60:]
 	}
-}
-
-// GetLogRates returns the log rate history
-func (m *Model) GetLogRates() []LogRatePoint {
-	m.state.gamesMutex.RLock()
-	defer m.state.gamesMutex.RUnlock()
-
-	rates := make([]LogRatePoint, len(m.state.logRates))
-	copy(rates, m.state.logRates)
-	return rates
 }
 
 // FormatTimestamp formats a timestamp for display
