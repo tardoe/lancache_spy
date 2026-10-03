@@ -1,16 +1,19 @@
 BINARY := lancache_spy
-export CGO_ENABLED := 0
 
-.PHONY: build linux test vet clean
+.PHONY: build linux test race vet clean
 
+# Static binaries, no libc dependency
 build:
-	go build -o $(BINARY) .
+	CGO_ENABLED=0 go build -o $(BINARY) .
 
 linux:
-	GOOS=linux GOARCH=amd64 go build -o $(BINARY)_linux_amd64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BINARY)_linux_amd64 .
 
 test:
 	go test ./...
+
+race:
+	go test -race ./...
 
 vet:
 	go vet ./...
